@@ -86,17 +86,66 @@ def calcular_distancia_euclidiana(X, Y):
 
 #------------------------------------------------------------------------------------------------
 
+# DISTANCIA DE PEARSON
+
+def calcular_distancia_pearson(X, Y):
+    """
+        Calcula a distância baseada na Correlação de Pearson: d_p = 1 - Corr(V, U),
+        ignorando valores ausentes (NaN) e usando apenas os atributos válidos em comum
+    """
+    n_x = X.shape[0]
+    n_y = Y.shape[0]
+    dists = np.zeros((n_x, n_y))
+
+    for j in range(n_y):
+        y = Y[j]
+        #mascara booleana: True onde TANTO o gene (X) quanto o centroide (y) não são NaN
+        mask = ~np.isnan(X) & ~np.isnan(y)
+        d = np.sum(mask, axis=1)
+
+        #calcula a media de X e de y considerando as posições validas em comum
+        d_seguro = np.where(d > 0, d, 1)[:, None]
+        mean_x = np.sum(np.where(mask, X, 0.0), axis=1, keepdims=True) / d_seguro
+        mean_y = np.sum(np.where(mask, y, 0.0), axis=1, keepdims=True) / d_seguro
+
+        #subtrai a média (centraliza) e zera onde havia NaN
+        dx = np.where(mask, X - mean_x, 0.0)
+        dy = np.where(mask, y - mean_y, 0.0)
+
+        #formula da Correlação de Pearson
+        numerador = np.sum(dx * dy, axis=1)
+        denominador = np.sqrt(np.sum(dx**2, axis=1) * np.sum(dy**2, axis=1))
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            corr = np.where((d > 1) & (denominador > 0), numerador / denominador, np.nan)
+            #garante que erros de arredondamento não deixem corr fora de [-1, 1]
+            corr = np.clip(corr, -1.0, 1.0)
+            dist_j = np.where(~np.isnan(corr), 1.0 - corr, 1.0)
+
+        dists[:, j] = dist_j
+
+    return dists
+
+
+#------------------------------------------------------------------------------------------------
+
 # CLASSE KMEANS
 
 class KMeans:
-    def __init__(self, k, max_iters=100, tol=0.01, n_init=10):
+    def __init__(self, k, max_iters=100, tol=0.01, n_init=10, metrica="euclidiana"):
         self.k = k
         self.max_iters = max_iters
         self.tol = tol
         self.n_init = n_init #numero de vezes que o algoritmo será reiniciado
+        self.metrica = metrica
         self.centroids = None
         self.labels = None
         self.inertia = np.inf
+
+    def _calcular_distancias(self, X, centroids):
+        if self.metrica == "pearson":
+            return calcular_distancia_pearson(X, centroids)
+        return calcular_distancia_euclidiana(X, centroids)
 
     def fit(self, X):
         best_inertia = np.inf
@@ -112,7 +161,7 @@ class KMeans:
             
             for it in range(self.max_iters):
                 #Atribuição: Calcula distância de cada ponto para os centroides
-                dists = calcular_distancia_euclidiana(X, centroids)
+                dists = self._calcular_distancias(X, centroids)
                 #o rótulo é o índice do centroide com menor distância
                 labels = np.argmin(dists, axis=1)
                 
@@ -137,7 +186,7 @@ class KMeans:
                     break
             
             #calcula a inercia (soma dos erros quadráticos) da execução
-            dists_finais = calcular_distancia_euclidiana(X, centroids)
+            dists_finais = self._calcular_distancias(X, centroids)
             min_dists = np.min(dists_finais, axis=1)
             current_inertia = np.nansum(min_dists**2)
             
@@ -153,6 +202,42 @@ class KMeans:
 
 #------------------------------------------------------------------------------------------------
 
+# QUALIDADE INTRACLUSTER
+
+def calcular_qualidade_intracluster(X, labels, metrica="euclidiana"):
+    """
+    Calcula a distancia media intra-cluster
+    Retorna:
+      - media_geral: media das distancias intra-cluster de todos os clusters validos
+      - qualidade_por_cluster: dicionário {id_cluster: distancia_media}
+    """
+    func_dist = (
+        calcular_distancia_pearson
+        if metrica == "pearson"
+        else calcular_distancia_euclidiana
+    )
+    qualidade_por_cluster = {}
+
+    for c in np.unique(labels):
+        pontos = X[labels == c]
+        n = len(pontos)
+
+        #só faz sentido calcular distância entre pares se houver pelo menos 2 genes no cluster
+        if n >= 2:
+            #matriz de distancias de todos contra todos dentro do mesmo cluster
+            D = func_dist(pontos, pontos)
+            #pega o triangulo superior da matriz (evita contar a diagonal 0 e pares repetidos)
+            triangulo_sup = D[np.triu_indices(n, k=1)]
+            #filtra apenas distancias finitas (ignora NaN e infinito)
+            pares_validos = triangulo_sup[np.isfinite(triangulo_sup)]
+            if len(pares_validos) > 0:
+                qualidade_por_cluster[c] = np.mean(pares_validos)
+
+    media_geral = np.mean(list(qualidade_por_cluster.values()))
+    return media_geral, qualidade_por_cluster
+
+#------------------------------------------------------------------------------------------------
+
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
     caminho = os.path.join(script_dir, "GDS38_full.soft.gz")
@@ -163,13 +248,13 @@ if __name__ == "__main__":
     total_nans = np.isnan(X).sum()
     percentual_nans = (total_nans / X.size) * 100
 
-    # print(f"Genes válidos após limpeza: {X.shape[0]}")
-    # print(f"Pontos temporais (colunas GSM): {X.shape[1]}")
-    # print(
-    #     f"Total de valores ausentes (NaN): {total_nans} ({percentual_nans:.2f}%)"
-    # )
-    # print("\nExemplo dos 3 primeiros genes reais:")
-    # print(df_limpo[["IDENTIFIER", "Gene symbol", "Gene title"]].head(3))
+    print(f"Genes válidos após limpeza: {X.shape[0]}")
+    print(f"Pontos temporais (colunas GSM): {X.shape[1]}")
+    print(
+        f"Total de valores ausentes (NaN): {total_nans} ({percentual_nans:.2f}%)"
+    )
+    print("\nExemplo dos 3 primeiros genes reais:")
+    print(df_limpo[["IDENTIFIER", "Gene symbol", "Gene title"]].head(3))
 
     print("\n--- Testando K-Means (200 genes, k=5) ---")
     km_teste = KMeans(k=5, max_iters=100, tol=0.01, n_init=1)
@@ -179,3 +264,22 @@ if __name__ == "__main__":
     clusters, contagens = np.unique(km_teste.labels, return_counts=True)
     for c, qtd in zip(clusters, contagens):
       print(f"  Cluster {c}: {qtd} genes")
+
+    print("\n--- Testando K-Means Pearson (200 genes, k=5) ---")
+    km_pearson = KMeans(k=5, max_iters=100, tol=0.01, n_init=1, metrica="pearson")
+    km_pearson.fit(X[:200])
+
+    print(f"Inércia Pearson (teste): {km_pearson.inertia:.4f}")
+    clusters_p, contagens_p = np.unique(km_pearson.labels, return_counts=True)
+    for c, qtd in zip(clusters_p, contagens_p):
+      print(f"  Cluster {c}: {qtd} genes")
+
+    qual_euc, _ = calcular_qualidade_intracluster(
+        X[:200], km_teste.labels, metrica="euclidiana"
+    )
+    qual_pea, _ = calcular_qualidade_intracluster(
+        X[:200], km_pearson.labels, metrica="pearson"
+    )
+
+    print(f"\nQualidade média intra-cluster (Euclidiana): {qual_euc:.4f}")
+    print(f"Qualidade média intra-cluster (Pearson):    {qual_pea:.4f}")
