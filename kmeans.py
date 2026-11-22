@@ -5,6 +5,7 @@ import io
 import matplotlib.pyplot as plt
 import gzip
 import warnings
+import time
 
 #------------------------------------------------------------------------------------------------
 
@@ -154,7 +155,8 @@ class KMeans:
         n_samples = X.shape[0]
 
         #Executa n_init vezes para evitar mínimos locais
-        for _ in range(self.n_init):
+        for rodada in range(self.n_init):
+            print(f"  [{self.metrica}] Rodada {rodada + 1}/{self.n_init}...")
             #Inicialização: Escolhe k pontos aleatórios como centroides iniciais
             indices = np.random.choice(n_samples, self.k, replace=False)
             centroids = X[indices]
@@ -244,42 +246,48 @@ if __name__ == "__main__":
 
     df_bruto = carregar_gds(caminho)
     X, df_limpo, colunas_gsm = preparar_dados(df_bruto)
+    print(f"Base carregada: {X.shape[0]} genes x {X.shape[1]} pontos temporais.\n")
 
-    total_nans = np.isnan(X).sum()
-    percentual_nans = (total_nans / X.size) * 100
+    #semente fixa para garantir que o experimento seja reprodutivel
+    np.random.seed(42)
 
-    print(f"Genes válidos após limpeza: {X.shape[0]}")
-    print(f"Pontos temporais (colunas GSM): {X.shape[1]}")
-    print(
-        f"Total de valores ausentes (NaN): {total_nans} ({percentual_nans:.2f}%)"
+    # Execução Euclidiana (k=100)
+    print("Iniciando K-Means com Distância Euclidiana Normalizada (k=100)...")
+    t0 = time.time()
+    km_euc = KMeans(k=100, max_iters=100, tol=0.01, n_init=3, metrica="euclidiana")
+    km_euc.fit(X)
+    tempo_euc = time.time() - t0
+    qual_euc, _ = calcular_qualidade_intracluster(X, km_euc.labels, metrica="euclidiana")
+
+    # Execução Pearson (k=100)
+    print("\nIniciando K-Means com Correlação de Pearson (k=100)...")
+    t0 = time.time()
+    km_pea = KMeans(k=100, max_iters=100, tol=0.01, n_init=3, metrica="pearson")
+    km_pea.fit(X)
+    tempo_pea = time.time() - t0
+    qual_pea, _ = calcular_qualidade_intracluster(X, km_pea.labels, metrica="pearson")
+
+    #salva os resultados
+    caminho_saida = os.path.join(script_dir, "resultados_k100.npz")
+    np.savez(
+        caminho_saida,
+        labels_euc=km_euc.labels,
+        centroids_euc=km_euc.centroids,
+        labels_pea=km_pea.labels,
+        centroids_pea=km_pea.centroids,
     )
-    print("\nExemplo dos 3 primeiros genes reais:")
-    print(df_limpo[["IDENTIFIER", "Gene symbol", "Gene title"]].head(3))
+    print(f"\nResultados salvos com sucesso em: {caminho_saida}")
 
-    print("\n--- Testando K-Means (200 genes, k=5) ---")
-    km_teste = KMeans(k=5, max_iters=100, tol=0.01, n_init=1)
-    km_teste.fit(X[:200])
+    #resumo comparativo
+    _, cont_euc = np.unique(km_euc.labels, return_counts=True)
+    _, cont_pea = np.unique(km_pea.labels, return_counts=True)
 
-    print(f"Inércia do teste: {km_teste.inertia:.4f}")
-    clusters, contagens = np.unique(km_teste.labels, return_counts=True)
-    for c, qtd in zip(clusters, contagens):
-      print(f"  Cluster {c}: {qtd} genes")
-
-    print("\n--- Testando K-Means Pearson (200 genes, k=5) ---")
-    km_pearson = KMeans(k=5, max_iters=100, tol=0.01, n_init=1, metrica="pearson")
-    km_pearson.fit(X[:200])
-
-    print(f"Inércia Pearson (teste): {km_pearson.inertia:.4f}")
-    clusters_p, contagens_p = np.unique(km_pearson.labels, return_counts=True)
-    for c, qtd in zip(clusters_p, contagens_p):
-      print(f"  Cluster {c}: {qtd} genes")
-
-    qual_euc, _ = calcular_qualidade_intracluster(
-        X[:200], km_teste.labels, metrica="euclidiana"
-    )
-    qual_pea, _ = calcular_qualidade_intracluster(
-        X[:200], km_pearson.labels, metrica="pearson"
-    )
-
-    print(f"\nQualidade média intra-cluster (Euclidiana): {qual_euc:.4f}")
-    print(f"Qualidade média intra-cluster (Pearson):    {qual_pea:.4f}")
+    print("\n" + "=" * 50)
+    print("RESUMO DA EXECUÇÃO COMPLETA (k=100, 6.486 genes)")
+    print("=" * 50)
+    print(f"Euclidiana | Tempo: {tempo_euc:.1f}s | Inércia: {km_euc.inertia:.2f} | Qualidade média: {qual_euc:.4f}")
+    print(f"           | Clusters >= 5 genes: {np.sum(cont_euc >= 5)}/100 | Maior cluster: {np.max(cont_euc)} genes")
+    print("-" * 50)
+    print(f"Pearson    | Tempo: {tempo_pea:.1f}s | Inércia: {km_pea.inertia:.2f} | Qualidade média: {qual_pea:.4f}")
+    print(f"           | Clusters >= 5 genes: {np.sum(cont_pea >= 5)}/100 | Maior cluster: {np.max(cont_pea)} genes")
+    print("=" * 50)
