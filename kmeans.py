@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import os
 import io
-import matplotlib.pyplot as plt
 import gzip
 import warnings
 import time
